@@ -19,12 +19,13 @@ INCLUDE_DIRECTORIES(${OpenCV_INCLUDE_DIRS})
 INCLUDE_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-8.6.1.6/include)
 LINK_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-8.6.1.6/lib)
 
+INCLUDE_DIRECTORIES(${PROJECT_SOURCE_DIR}/include)
 
-CUDA_ADD_LIBRARY(myplugins SHARED ${PROJECT_SOURCE_DIR}/yololayer.cu)
+CUDA_ADD_LIBRARY(myplugins SHARED ${PROJECT_SOURCE_DIR}/plugin/yololayer.cu)
 target_link_libraries(myplugins nvinfer cudart)
 
 add_executable(yolov5_trt_api
-        main.cpp yololayer.cu)
+        main.cpp plugin/yololayer.cu)
 
 target_link_libraries(yolov5_trt_api myplugins)
 target_link_libraries(yolov5_trt_api cudart)

@@ -10,7 +10,7 @@
 #include "logging.hpp"
 #include "config.h"
 #include "types.h"
-#include "yololayer.hpp"
+#include "plugin/yololayer.hpp"
 
 const static char* kInputTensorName = "data";
 const static char* kOutputTensorName = "prob";
