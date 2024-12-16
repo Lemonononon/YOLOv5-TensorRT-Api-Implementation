@@ -118,7 +118,7 @@ ILayer* addConvBNLeaky( INetworkDefinition *network, std::map<std::string, Weigh
 
 }
 
-ILayer* addFocus( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int input_h, int input_w ){
+ILayer* addFocus( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int input_h, int input_w, int output_c, int kernel_size, int stride, int g ){
 
     ISliceLayer *s1 = network->addSlice(input, Dims3{0, 0, 0}, Dims3{3, input_h / 2, input_w / 2}, Dims3{1, 2, 2});
     ISliceLayer *s2 = network->addSlice(input, Dims3{0, 1, 0}, Dims3{3, input_h / 2, input_w / 2}, Dims3{1, 2, 2});
@@ -127,7 +127,7 @@ ILayer* addFocus( INetworkDefinition* network, std::map<std::string, Weights>& w
     ITensor* inputTensors[] = {s1->getOutput(0), s2->getOutput(0), s3->getOutput(0), s4->getOutput(0)};
     auto cat = network->addConcatenation(inputTensors, 4);
 
-    return addConvBNLeaky( network, weightMap, *cat->getOutput(0), 48, 3, 1, 1, "model.0.conv" );
+    return addConvBNLeaky( network, weightMap, *cat->getOutput(0), output_c, kernel_size, stride, g, "model.0.conv" );
 }
 
 ILayer* addBottleneck( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c1, int c2, bool shortcut, int g, float e, std::string name ) {
@@ -148,16 +148,26 @@ ILayer* addBottleneck( INetworkDefinition* network, std::map<std::string, Weight
 
     return cv2;
 }
-ILayer* addBottleneckBlock( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c1, int c2, int n, bool shortcut, int g, float e, std::string name ) {
+ILayer* addBottleneckBlock( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c1, int c2, int n, bool shortcut, int g, float e, std::string name, bool need_suffix = true ) {
 
-    int c_ = int(c2 * e);
+    if (need_suffix){
+        auto layer = addBottleneck( network, weightMap, input, c1, c2, shortcut, g, e, name+".0" );
 
-    auto layer = addBottleneck( network, weightMap, input, c1, c2, shortcut, g, e, name+".0" );
+        for (int i = 1; i < n; ++i) {
+            layer = addBottleneck( network, weightMap, *layer->getOutput(0), c1, c2, shortcut, g, e, name+"."+std::to_string(i) );
+        }
 
-    for (int i = 1; i < n; ++i) {
-        layer = addBottleneck( network, weightMap, *layer->getOutput(0), c1, c2, shortcut, g, e, name+"."+std::to_string(i) );
+        return layer;
+
+    }else{
+        auto layer = addBottleneck( network, weightMap, input, c1, c2, shortcut, g, e, name );
+
+        for (int i = 1; i < n; ++i) {
+            layer = addBottleneck( network, weightMap, *layer->getOutput(0), c1, c2, shortcut, g, e, name );
+        }
+        return layer;
     }
-    return layer;
+
 }
 
 ILayer* addBottleneckCSP( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c1, int c2, int n, bool shortcut, int g, float e, std::string name ) {
@@ -293,7 +303,7 @@ IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilde
     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
 
     // bakcbone
-    auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW );
+    auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 48, 3, 1, 1 );
     // printTensor("focus0", focus0->getOutput(0));
 
     auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 96, 3, 2, 1,"model.1" );
@@ -405,11 +415,209 @@ IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilde
     yolo->getOutput(0)->setName(kOutputTensorName);
     network->markOutput(*yolo->getOutput(0));
 
+    builder->setMaxBatchSize(maxBatchSize);
     config->setFlag(BuilderFlag::kFP16);
     auto engine = builder->buildSerializedNetwork(*network, *config);
 
     return engine;
 
+}
+
+IHostMemory* build_engine_s( unsigned int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
+
+    INetworkDefinition* network = builder->createNetworkV2(0U);
+
+    // Create input tensor of shape {3, kInputH, kInputW}
+    ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+
+    std::map<std::string, Weights> weightMap = loadWeights(wts_path);
+    Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
+
+    // bakcbone
+    auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 32, 3 , 1, 1 );
+    focus0->setName("focus0");
+    // printTensor("focus0", focus0->getOutput(0));
+
+    // focus0->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*focus0->getOutput(0));
+    //
+    // auto shape = focus0->getOutput(0)->getDimensions();
+    //
+    // for (int i = 0; i < shape.nbDims; ++i) {
+    //     std::cout << shape.d[i] << " ";
+    // }
+    //
+    // std::cout << std::endl;
+
+
+
+
+    auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 64, 3, 2, 1,"model.1" );
+    conv1->setName("conv1");
+    // printTensor("conv1", conv1->getOutput(0));
+    // conv1->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv1->getOutput(0));
+
+    auto bottleneck2 = addBottleneckBlock( network, weightMap, *conv1->getOutput(0), 64, 64, 1, true, 1, 0.5, "model.2",
+                                           false );
+    bottleneck2->setName("bottleneck2");
+    // printTensor("bottleneck2", bottleneck2->getOutput(0));
+    // bottleneck2->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*bottleneck2->getOutput(0));
+
+    auto conv3 = addConvBNLeaky( network, weightMap, *bottleneck2->getOutput(0), 128, 3, 2, 1, "model.3" );
+    conv3->setName("conv3");
+    // printTensor("conv3", conv3->getOutput(0));
+
+    // conv3->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv3->getOutput(0));
+    //
+    // auto shape = conv3->getOutput(0)->getDimensions();
+    //
+    // for (int i = 0; i < shape.nbDims; ++i) {
+    //     std::cout << shape.d[i] << " ";
+    // }
+    //
+    // std::cout << std::endl;
+
+
+    auto bottleneck_csp4 = addBottleneckCSP( network, weightMap, *conv3->getOutput(0), 128, 128, 3, true, 1, 0.5, "model.4" );
+    bottleneck_csp4->setName("bottleneck_csp4");
+    // printTensor("bottleneck_csp4", bottleneck_csp4->getOutput(0));
+
+    auto conv5 = addConvBNLeaky( network, weightMap, *bottleneck_csp4->getOutput(0), 256, 3, 2, 1, "model.5" );
+    conv5->setName("conv5");
+    // // printTensor("conv5", conv5->getOutput(0));
+    // conv5->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv5->getOutput(0));
+    //
+    // auto shape = conv5->getOutput(0)->getDimensions();
+    //
+    // for (int i = 0; i < shape.nbDims; ++i) {
+    //     std::cout << shape.d[i] << " ";
+    // }
+    //
+    // std::cout << std::endl;
+
+
+    auto bottleneck_csp6 = addBottleneckCSP( network, weightMap, *conv5->getOutput(0), 256, 256, 3, true, 1, 0.5, "model.6" );
+    bottleneck_csp6->setName("bottleneck_csp6");
+    // printTensor("bottleneck_csp6", bottleneck_csp6->getOutput(0));
+
+    auto conv7 = addConvBNLeaky( network, weightMap, *bottleneck_csp6->getOutput(0), 512, 3, 2, 1, "model.7");
+    conv7->setName("conv7");
+    // printTensor("conv7", conv7->getOutput(0));
+
+    auto spp8 = addSPP( network, weightMap, *conv7->getOutput(0), 512, 512, {5, 9, 13}, "model.8" );
+    spp8->setName("spp8");
+    // printTensor("spp8", spp8->getOutput(0));
+
+    auto bottleneck_csp9 = addBottleneckCSP( network, weightMap, *spp8->getOutput(0), 512, 512, 2, true, 1, 0.5, "model.9" );
+    bottleneck_csp9->setName("bottleneck_csp9");
+    // printTensor("bottleneck_csp9", bottleneck_csp9->getOutput(0));
+
+    // // head  wrong
+    auto bottleneck_csp10 = addBottleneckCSP( network, weightMap, *bottleneck_csp9->getOutput(0), 512, 512, 1, false, 1, 0.5, "model.10" );
+    bottleneck_csp10->setName("bottleneck_csp10");
+    // printTensor("bottleneck_csp10", bottleneck_csp10->getOutput(0));
+    // bottleneck_csp10->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*bottleneck_csp10->getOutput(0));
+
+    auto conv11 = network->addConvolutionNd( *bottleneck_csp10->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.11.weight"], weightMap["model.11.bias"]);
+    conv11->setName("conv.11");
+    conv11->setStrideNd(DimsHW{1, 1});
+    conv11->setPaddingNd(DimsHW{0, 0});
+    // printTensor("conv11", conv11->getOutput(0));
+
+    float scale[] = {1.0, 2.0, 2.0};
+    //upsample12 scale_factor = 2
+    auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
+    upsample12->setName("upsample12");
+    upsample12->setResizeMode(ResizeMode::kNEAREST);
+    upsample12->setScales(scale, 3);
+    // printTensor("upsample12", upsample12->getOutput(0));
+
+    ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
+    auto cat13 = network->addConcatenation(inputTensorsCat13, 2);
+    cat13->setName("cat13");
+    // printTensor("cat13", cat13->getOutput(0));
+    // cat13->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*cat13->getOutput(0));
+
+    //
+    //
+    //
+    auto conv14 = addConvBNLeaky( network, weightMap, *cat13->getOutput(0), 256, 1, 1, 1, "model.14" );
+    conv14->setName("conv14");
+    // printTensor("conv14", conv14->getOutput(0));
+    // conv14->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv14->getOutput(0));
+
+
+    auto bottleneck_csp15 = addBottleneckCSP( network, weightMap, *conv14->getOutput(0), 256, 256, 1, false, 1, 0.5, "model.15" );
+    bottleneck_csp15->setName("bottleneck_csp15");
+    // printTensor("bottleneck_csp15", bottleneck_csp15->getOutput(0));
+
+    auto conv16 = network->addConvolutionNd( *bottleneck_csp15->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.16.weight"], weightMap["model.16.bias"]);
+    conv16->setName("conv16");
+    // printTensor("conv16", conv16->getOutput(0));
+
+    // conv16->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv16->getOutput(0));
+
+    // upsample 17
+    auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
+    upsample17->setName("upsample17");
+    upsample17->setResizeMode(ResizeMode::kNEAREST);
+    upsample17->setScales(scale, 3);
+    // printTensor("upsample17", upsample17->getOutput(0));
+
+
+    ITensor* inputTensorsCat18[] = {upsample17->getOutput(0), bottleneck_csp4->getOutput(0)};
+    auto cat18 = network->addConcatenation(inputTensorsCat18, 2);
+    cat18->setName("cat18");
+    // printTensor("cat18", cat18->getOutput(0));
+    // cat18->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*cat18->getOutput(0));
+
+    auto conv19 = addConvBNLeaky(network, weightMap, *cat18->getOutput(0), 128, 1, 1, 1, "model.19");
+    conv19->setName("conv19");
+    // printTensor("conv19", conv19->getOutput(0));
+    // conv19->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv19->getOutput(0));
+
+    auto bottleneck_csp20 = addBottleneckCSP( network, weightMap, *conv19->getOutput(0), 128, 128, 1, false, 1, 0.5, "model.20" );
+    bottleneck_csp20->setName("bottleneck_csp20");
+    // printTensor("bottleneck_csp20", bottleneck_csp20->getOutput(0));
+    // bottleneck_csp20->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*bottleneck_csp20->getOutput(0));
+
+    auto conv21 = network->addConvolutionNd( *bottleneck_csp20->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.21.weight"], weightMap["model.21.bias"]);
+    conv21->setName("conv21");
+    // // printTensor("conv21", conv21->getOutput(0));
+    // conv21->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv21->getOutput(0));
+    //
+    // auto shape = conv21->getOutput(0)->getDimensions();
+    //
+    // for (int i = 0; i < shape.nbDims; ++i) {
+    //     std::cout << shape.d[i] << " ";
+    // }
+    // std::cout << std::endl;
+
+
+    // // Detect plugin
+    auto yolo = addYololayer( network, weightMap, "model.22", {conv21, conv16, conv11} );
+    yolo->setName("yolo");
+
+    yolo->getOutput(0)->setName(kOutputTensorName);
+    network->markOutput(*yolo->getOutput(0));
+
+    builder->setMaxBatchSize(maxBatchSize);
+    config->setFlag(BuilderFlag::kFP16);
+    auto engine = builder->buildSerializedNetwork(*network, *config);
+
+    return engine;
 }
 
 void deserialize_engine(std::string& engine_name, IRuntime** runtime, ICudaEngine** engine, IExecutionContext** context) {
@@ -456,6 +664,33 @@ bool cmp(Detection& a, Detection& b) {
 }
 
 void nms(std::vector<Detection>& res, float *output, float conf_thresh, float nms_thresh) {
+    int det_size = sizeof(Detection) / sizeof(float);
+
+    std::vector<Detection> m;
+
+    for (int i = 0; i < output[0] && i < kMaxNumOutputBbox; ++i) {
+        if ( output[ 1 + det_size * i + 4 ] <= conf_thresh ) continue;
+        Detection det;
+        memcpy(&det, &output[1 + det_size * i], det_size * sizeof(float));
+        m.push_back(det);
+    }
+
+    // 两种类别在一起做nms，而不是分别做一遍
+    std::sort(m.begin(), m.end(), cmp);
+
+    for (int i = 0; i < m.size(); ++i) {
+        auto& item = m[i];
+        res.push_back(item);
+        for (int j = i + 1; j < m.size(); ++j) {
+            if (iou(item.bbox, m[j].bbox) > nms_thresh) {
+                m.erase(m.begin() + j);
+                --j;
+            }
+        }
+    }
+}
+
+void nms_platelet(std::vector<Detection>& res, float *output, float conf_thresh, float nms_thresh) {
     int det_size = sizeof(Detection) / sizeof(float);
 
     std::vector<Detection> m;
@@ -545,7 +780,7 @@ void draw_bbox(std::vector<cv::Mat>& img_batch, std::vector<std::vector<Detectio
 
 int main(){
 
-    std::string engine_path = "../weights/yolov5m.engine";
+    std::string engine_path = "../weights/yolov5s_platelet.engine";
     bool need_build = false;
     need_build = true;
 
@@ -559,7 +794,8 @@ int main(){
         IBuilder* builder = createInferBuilder(gLogger);
         IBuilderConfig* config = builder->createBuilderConfig();
 
-        auto engine_data = build_engine( 1, builder, config, DataType::kFLOAT, "../weights/yolov5m.wts");
+        auto engine_data = build_engine_s( 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5s_platelet.wts");
+        // auto engine_data = build_engine( 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m.wts");
 
         std::ofstream ofs(engine_path, std::ios::binary);
         if (!ofs){
@@ -601,8 +837,14 @@ int main(){
     CUDA_CHECK(cudaMalloc(&buffers[inputIndex], batchSizeDetection * 3 * inputHeightDetection * inputWidthDetection * sizeof(float))); //对gpu进行显存分配
     CUDA_CHECK(cudaMalloc(&buffers[outputIndex], batchSizeDetection * OUTPUT_SIZE * sizeof(float)));
 
-    float CONF_THRESH = 0.35;
-    float NMS_THRESH = 0.2;
+    // red
+    // float CONF_THRESH = 0.35;
+    // float NMS_THRESH = 0.2;
+
+    // platelet
+    float CONF_THRESH = 0.3;
+    float NMS_THRESH = 0.3;
+
 
     std::vector<float> data;
     data.resize(batchSizeDetection * 3 * inputHeightDetection * inputWidthDetection);
@@ -632,6 +874,38 @@ int main(){
     // context->enqueueV2(buffers, stream, nullptr);
     context->enqueue(1, buffers, stream, nullptr);
 
+    auto shape = engine->getTensorShape(kOutputTensorName);
+
+    // std::cout << std::endl;
+    // for (int i = 0; i < shape.nbDims; ++i) {
+    //     std::cout << shape.d[i] << " ";
+    // }
+    // std::cout << std::endl;
+
+    CUDA_CHECK(cudaMemcpyAsync( prob.data(), buffers[outputIndex], OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream ));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+
+    auto begin = std::chrono::system_clock::now();
+    cv::resize(origin_img, img, cv::Size(inputWidthDetection, inputHeightDetection));
+
+    index = 0;
+    for (int row = 0; row < inputHeightDetection; ++row) {
+        uchar *uc_pixel = img.data + row * img.step;
+        for (int col = 0; col < inputWidthDetection; ++col) {
+            data[index] = (float) uc_pixel[2] / 255.0;
+            data[index + inputHeightDetection * inputWidthDetection] = (float) uc_pixel[1] / 255.0;
+            data[index + 2 * inputHeightDetection * inputWidthDetection] = (float) uc_pixel[0] / 255.0;
+            uc_pixel += 3;
+            ++index;
+        }
+    }
+
+    cudaMemcpyAsync( buffers[inputIndex], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
+    // context->setBindingDimensions(0, nvinfer1::Dims4(1, 3, inputHeightDetection, inputWidthDetection));
+    // context->enqueueV2(buffers, stream, nullptr);
+    context->enqueue(1, buffers, stream, nullptr);
+
     // auto shape = engine->getTensorShape(kOutputTensorName);
     //
     // for (int i = 0; i < shape.nbDims; ++i) {
@@ -642,17 +916,24 @@ int main(){
 
     CUDA_CHECK(cudaMemcpyAsync( prob.data(), buffers[outputIndex], OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream ));
     CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    for (int i = prob.size()-21; i < prob.size(); ++i) {
-        std::cout << prob[i] << " ";
-    }
-
+    //
+    //
+    // // for (int i = prob.size()-21; i < prob.size(); ++i) {
+    // //     std::cout << prob[i] << " ";
+    // // }
+    //
     // // nms
     std::vector<std::vector<Detection>> batch_res(1);
     for (int b = 0; b < 1; b++) {
         auto& res = batch_res[b];
         nms(res, &prob[b * OUTPUT_SIZE], CONF_THRESH, NMS_THRESH);
     }
+
+    auto end = std::chrono::system_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+    std::cout << "inference time: " << duration.count() << " ms" << std::endl;
+
+    std::cout << "num of boxes: " << batch_res[0].size() << std::endl;
 
     draw_bbox(origin_img, batch_res[0]);
 
