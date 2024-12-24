@@ -16,8 +16,10 @@ FIND_PACKAGE(OpenCV REQUIRED)
 INCLUDE_DIRECTORIES(${OpenCV_INCLUDE_DIRS})
 
 # TensorRT
-INCLUDE_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-8.6.1.6/include)
-LINK_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-8.6.1.6/lib)
+#INCLUDE_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-8.6.1.6/include)
+#LINK_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-8.6.1.6/lib)
+INCLUDE_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-10.6.0.26/include)
+LINK_DIRECTORIES(/home/xiaoying/code/dep/TensorRT-10.6.0.26/lib)
 
 INCLUDE_DIRECTORIES(${PROJECT_SOURCE_DIR}/include)
 

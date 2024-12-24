@@ -15,8 +15,10 @@
 const static char* kInputTensorName = "data";
 const static char* kOutputTensorName = "prob";
 
-constexpr static int kInputH = 640;
-constexpr static int kInputW = 640;
+// constexpr static int kInputH = 640;
+// constexpr static int kInputW = 640;
+constexpr static int kInputH = 960;
+constexpr static int kInputW = 960;
 
 using namespace nvinfer1;
 static Logger gLogger;
@@ -120,10 +122,17 @@ ILayer* addConvBNLeaky( INetworkDefinition *network, std::map<std::string, Weigh
 
 ILayer* addFocus( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int input_h, int input_w, int output_c, int kernel_size, int stride, int g ){
 
-    ISliceLayer *s1 = network->addSlice(input, Dims3{0, 0, 0}, Dims3{3, input_h / 2, input_w / 2}, Dims3{1, 2, 2});
-    ISliceLayer *s2 = network->addSlice(input, Dims3{0, 1, 0}, Dims3{3, input_h / 2, input_w / 2}, Dims3{1, 2, 2});
-    ISliceLayer *s3 = network->addSlice(input, Dims3{0, 0, 1}, Dims3{3, input_h / 2, input_w / 2}, Dims3{1, 2, 2});
-    ISliceLayer *s4 = network->addSlice(input, Dims3{0, 1, 1}, Dims3{3, input_h / 2, input_w / 2}, Dims3{1, 2, 2});
+    auto shape = input.getDimensions();
+
+    ISliceLayer *s1 = network->addSlice(input, Dims4{0, 0, 0, 0}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    ISliceLayer *s2 = network->addSlice(input, Dims4{0, 0, 1, 0}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    ISliceLayer *s3 = network->addSlice(input, Dims4{0, 0, 0, 1}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    ISliceLayer *s4 = network->addSlice(input, Dims4{0, 0, 1, 1}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+
+    // ISliceLayer *s1 = network->addSlice(input, Dims4{0, 0, 0, 0}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    // ISliceLayer *s2 = network->addSlice(input, Dims4{0, 0, 1, 0}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    // ISliceLayer *s3 = network->addSlice(input, Dims4{0, 0, 0, 1}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    // ISliceLayer *s4 = network->addSlice(input, Dims4{0, 0, 1, 1}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
     ITensor* inputTensors[] = {s1->getOutput(0), s2->getOutput(0), s3->getOutput(0), s4->getOutput(0)};
     auto cat = network->addConcatenation(inputTensors, 4);
 
@@ -292,12 +301,13 @@ void printTensor(const char* name, ITensor* tensor) {
     std::cout <<std::endl;
 }
 
-IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
+IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
 
-    INetworkDefinition* network = builder->createNetworkV2(0U);
+    INetworkDefinition* network = builder->createNetworkV2(1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
 
     // Create input tensor of shape {3, kInputH, kInputW}
-    ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+    // ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+    ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
 
     std::map<std::string, Weights> weightMap = loadWeights(wts_path);
     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
@@ -352,11 +362,12 @@ IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilde
     conv11->setPaddingNd(DimsHW{0, 0});
     // printTensor("conv11", conv11->getOutput(0));
 
-    float scale[] = {1.0, 2.0, 2.0};
+    float scale[] = {1.0, 1.0, 2.0, 2.0};
     //upsample12 scale_factor = 2
     auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
-    upsample12->setResizeMode(ResizeMode::kNEAREST);
-    upsample12->setScales(scale, 3);
+    // upsample12->setResizeMode(ResizeMode::kNEAREST);
+    upsample12->setResizeMode(InterpolationMode::kNEAREST);
+    upsample12->setScales(scale, 4);
     // printTensor("upsample12", upsample12->getOutput(0));
 
     ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
@@ -385,8 +396,8 @@ IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilde
 
     // upsample 17
     auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
-    upsample17->setResizeMode(ResizeMode::kNEAREST);
-    upsample17->setScales(scale, 3);
+    upsample17->setResizeMode(InterpolationMode::kNEAREST);
+    upsample17->setScales(scale, 4);
     // printTensor("upsample17", upsample17->getOutput(0));
 
 
@@ -415,7 +426,14 @@ IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilde
     yolo->getOutput(0)->setName(kOutputTensorName);
     network->markOutput(*yolo->getOutput(0));
 
-    builder->setMaxBatchSize(maxBatchSize);
+    // auto profile = builder->createOptimizationProfile();
+    //
+    // profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
+    // profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
+    // profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
+    //
+    // // builder->setMaxBatchSize(maxBatchSize);
+    // config->addOptimizationProfile(profile);
     config->setFlag(BuilderFlag::kFP16);
     auto engine = builder->buildSerializedNetwork(*network, *config);
 
@@ -423,12 +441,13 @@ IHostMemory* build_engine( unsigned int maxBatchSize, IBuilder* builder, IBuilde
 
 }
 
-IHostMemory* build_engine_s( unsigned int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
+IHostMemory* build_engine_s( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
 
-    INetworkDefinition* network = builder->createNetworkV2(0U);
+    INetworkDefinition* network = builder->createNetworkV2(1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
 
     // Create input tensor of shape {3, kInputH, kInputW}
-    ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+    // ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+    ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
 
     std::map<std::string, Weights> weightMap = loadWeights(wts_path);
     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
@@ -533,7 +552,7 @@ IHostMemory* build_engine_s( unsigned int maxBatchSize, IBuilder* builder, IBuil
     //upsample12 scale_factor = 2
     auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
     upsample12->setName("upsample12");
-    upsample12->setResizeMode(ResizeMode::kNEAREST);
+    upsample12->setResizeMode(InterpolationMode::kNEAREST);
     upsample12->setScales(scale, 3);
     // printTensor("upsample12", upsample12->getOutput(0));
 
@@ -568,7 +587,7 @@ IHostMemory* build_engine_s( unsigned int maxBatchSize, IBuilder* builder, IBuil
     // upsample 17
     auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
     upsample17->setName("upsample17");
-    upsample17->setResizeMode(ResizeMode::kNEAREST);
+    upsample17->setResizeMode(InterpolationMode::kNEAREST);
     upsample17->setScales(scale, 3);
     // printTensor("upsample17", upsample17->getOutput(0));
 
@@ -613,7 +632,14 @@ IHostMemory* build_engine_s( unsigned int maxBatchSize, IBuilder* builder, IBuil
     yolo->getOutput(0)->setName(kOutputTensorName);
     network->markOutput(*yolo->getOutput(0));
 
-    builder->setMaxBatchSize(maxBatchSize);
+    auto profile = builder->createOptimizationProfile();
+
+    profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
+    profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
+    profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
+
+    config->addOptimizationProfile(profile);
+    // builder->setMaxBatchSize(maxBatchSize);
     config->setFlag(BuilderFlag::kFP16);
     auto engine = builder->buildSerializedNetwork(*network, *config);
 
@@ -717,30 +743,44 @@ void nms_platelet(std::vector<Detection>& res, float *output, float conf_thresh,
     }
 }
 
-cv::Rect get_rect(cv::Mat& img, float bbox[4]) {
-    float l, r, t, b;
-    float r_w = kInputW / (img.cols * 1.0);
-    float r_h = kInputH / (img.rows * 1.0);
-    if (r_h > r_w) {
-        l = bbox[0] - bbox[2] / 2.f;
-        r = bbox[0] + bbox[2] / 2.f;
-        t = bbox[1] - bbox[3] / 2.f - (kInputH - r_w * img.rows) / 2;
-        b = bbox[1] + bbox[3] / 2.f - (kInputH - r_w * img.rows) / 2;
-        l = l / r_w;
-        r = r / r_w;
-        t = t / r_w;
-        b = b / r_w;
-    } else {
-        l = bbox[0] - bbox[2] / 2.f - (kInputW - r_h * img.cols) / 2;
-        r = bbox[0] + bbox[2] / 2.f - (kInputW - r_h * img.cols) / 2;
-        t = bbox[1] - bbox[3] / 2.f;
-        b = bbox[1] + bbox[3] / 2.f;
-        l = l / r_h;
-        r = r / r_h;
-        t = t / r_h;
-        b = b / r_h;
-    }
-    return cv::Rect(round(l), round(t), round(r - l), round(b - t));
+// cv::Rect get_rect(cv::Mat& img, float bbox[4]) {
+//     float l, r, t, b;
+//     float r_w = kInputW / (img.cols * 1.0);
+//     float r_h = kInputH / (img.rows * 1.0);
+//     if (r_h > r_w) {
+//         l = bbox[0] - bbox[2] / 2.f;
+//         r = bbox[0] + bbox[2] / 2.f;
+//         t = bbox[1] - bbox[3] / 2.f - (kInputH - r_w * img.rows) / 2;
+//         b = bbox[1] + bbox[3] / 2.f - (kInputH - r_w * img.rows) / 2;
+//         l = l / r_w;
+//         r = r / r_w;
+//         t = t / r_w;
+//         b = b / r_w;
+//     } else {
+//         l = bbox[0] - bbox[2] / 2.f - (kInputW - r_h * img.cols) / 2;
+//         r = bbox[0] + bbox[2] / 2.f - (kInputW - r_h * img.cols) / 2;
+//         t = bbox[1] - bbox[3] / 2.f;
+//         b = bbox[1] + bbox[3] / 2.f;
+//         l = l / r_h;
+//         r = r / r_h;
+//         t = t / r_h;
+//         b = b / r_h;
+//     }
+//     return cv::Rect(round(l), round(t), round(r - l), round(b - t));
+// }
+
+cv::Rect get_rect(cv::Mat& img, float bbox[4]){
+    int left, right, top, bottom;
+
+    float rowRatio = 1.0 * img.rows / 960;
+    float colRatio = 1.0 * img.cols / 960;
+
+    left = std::max(0, int((bbox[0] - bbox[2]/2.0) * colRatio));
+    right = std::min(img.cols - 1, int((bbox[0] + bbox[2]/2.0) * colRatio));
+    top = std::max(0, int((bbox[1] - bbox[3]/2.0) * rowRatio));
+    bottom = std::min(img.rows - 1, int((bbox[1] + bbox[3]/2.0) * rowRatio));
+
+    return {left, top, right - left, bottom - top};
 }
 
 void draw_bbox( cv::Mat& img, std::vector<Detection>& res) {
@@ -751,17 +791,24 @@ void draw_bbox( cv::Mat& img, std::vector<Detection>& res) {
         cv::Scalar color;
         if ( res[j].class_id == 0 ){
             // green
-            color = cv::Scalar(0,255,0);
+            color = cv::Scalar(0,0,255);
+
+            cv::rectangle(img, r, color, 2);
+
+            // cv::rectangle(img, r, cv::Scalar(0x27, 0xC1, 0x36), 2);
+            // cv::putText(img, std::to_string((int)res[j].class_id) + " " + std::to_string(res[j].conf), cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+            cv::putText(img, "", cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+
         }else if ( res[j].class_id == 1){
             // blue
             color = cv::Scalar(255,0,0);
         }else{
             color = cv::Scalar(0,0,255);
         }
-        cv::rectangle(img, r, color, 2);
-
-        // cv::rectangle(img, r, cv::Scalar(0x27, 0xC1, 0x36), 2);
-        cv::putText(img, std::to_string((int)res[j].class_id) + " " + std::to_string(res[j].conf), cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+        // cv::rectangle(img, r, color, 2);
+        //
+        // // cv::rectangle(img, r, cv::Scalar(0x27, 0xC1, 0x36), 2);
+        // cv::putText(img, std::to_string((int)res[j].class_id) + " " + std::to_string(res[j].conf), cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
     }
 }
 
@@ -780,7 +827,8 @@ void draw_bbox(std::vector<cv::Mat>& img_batch, std::vector<std::vector<Detectio
 
 int main(){
 
-    std::string engine_path = "../weights/yolov5s_platelet.engine";
+    // std::string engine_path = "../weights/yolov5s_platelet.engine";
+    std::string engine_path = "../weights/yolov5m_red.engine";
     bool need_build = false;
     need_build = true;
 
@@ -794,8 +842,8 @@ int main(){
         IBuilder* builder = createInferBuilder(gLogger);
         IBuilderConfig* config = builder->createBuilderConfig();
 
-        auto engine_data = build_engine_s( 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5s_platelet.wts");
-        // auto engine_data = build_engine( 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m.wts");
+        // auto engine_data = build_engine_s( 1, 40, 100, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5s_platelet.wts");
+        auto engine_data = build_engine( 1, 1, 1, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m_red_20241219.wts");
 
         std::ofstream ofs(engine_path, std::ios::binary);
         if (!ofs){
@@ -819,14 +867,27 @@ int main(){
     CUDA_CHECK(cudaStreamCreate(&stream));
 
     int batchSizeDetection = 1;
-    int inputHeightDetection = 640;
-    int inputWidthDetection = 640;
+    // int inputHeightDetection = 640;
+    // int inputWidthDetection = 640;
+    int inputHeightDetection = 960;
+    int inputWidthDetection = 960;
 
     // 输入输出绑定
     void* buffers[2]{};
 
-    auto inputIndex = engine->getBindingIndex(kInputTensorName);
-    auto outputIndex = engine->getBindingIndex(kOutputTensorName);
+    TensorIOMode input_mode = engine->getTensorIOMode(kInputTensorName);
+    if (input_mode != TensorIOMode::kINPUT) {
+        std::cerr << kInputTensorName << " should be input tensor" << std::endl;
+        assert(false);
+    }
+    TensorIOMode output_mode = engine->getTensorIOMode(kOutputTensorName);
+    if (output_mode != TensorIOMode::kOUTPUT) {
+        std::cerr << kOutputTensorName << " should be output tensor" << std::endl;
+        assert(false);
+    }
+
+    // auto inputIndex = engine->getBindingIndex(kInputTensorName);
+    // auto outputIndex = engine->getBindingIndex(kOutputTensorName);
 
     // std::cout << "inputIndex: " << inputIndex << std::endl;
     // std::cout << "outputIndex: " << outputIndex << std::endl;
@@ -834,25 +895,32 @@ int main(){
     int OUTPUT_SIZE = kMaxNumOutputBbox * sizeof(Detection) / sizeof(float) + 1;  // we assume the yololayer outputs no more than MAX_OUTPUT_BBOX_COUNT boxes that conf >= 0.1
     // OUTPUT_SIZE = 1152*40*40;
 
-    CUDA_CHECK(cudaMalloc(&buffers[inputIndex], batchSizeDetection * 3 * inputHeightDetection * inputWidthDetection * sizeof(float))); //对gpu进行显存分配
-    CUDA_CHECK(cudaMalloc(&buffers[outputIndex], batchSizeDetection * OUTPUT_SIZE * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&buffers[0], batchSizeDetection * 3 * inputHeightDetection * inputWidthDetection * sizeof(float))); //对gpu进行显存分配
+    CUDA_CHECK(cudaMalloc(&buffers[1], batchSizeDetection * OUTPUT_SIZE * sizeof(float)));
+
+    context->setInputTensorAddress(kInputTensorName, buffers[0]);
+    context->setOutputTensorAddress(kOutputTensorName, buffers[1]);
 
     // red
-    // float CONF_THRESH = 0.35;
-    // float NMS_THRESH = 0.2;
+    float CONF_THRESH = 0.5;
+    float NMS_THRESH = 0.2;
 
-    // platelet
-    float CONF_THRESH = 0.3;
-    float NMS_THRESH = 0.3;
+    // // platelet
+    // float CONF_THRESH = 0.3;
+    // float NMS_THRESH = 0.3;
 
 
     std::vector<float> data;
     data.resize(batchSizeDetection * 3 * inputHeightDetection * inputWidthDetection);
 
-    auto origin_img = cv::imread("/home/xiaoying/code/zhangqian/red_det/yolov5-master_rbc_fang/ceshi_plot/rt/132_057_93623_142857_0.jpg");
+    // auto origin_img = cv::imread("/home/xiaoying/code/zhangqian/red_det/yolov5-master_rbc_fang/ceshi_plot/rt/132_057_93623_142857_0.jpg");
+    // auto origin_img = cv::imread("/home/xiaoying/code/data/pegasus_red/0.5X/2024-09-19_14_00_07_441.jpg");
+    auto origin_img = cv::imread("/home/xiaoying/code/data/pegasus_red/0.5X/2024-09-19_14_13_32_539.bmp");
     cv::Mat img;
 
     cv::resize(origin_img, img, cv::Size(inputWidthDetection, inputHeightDetection));
+    // cv::rotate(origin_img, origin_img, 0);
+    // img = origin_img;
 
     int index = 0;
     for (int row = 0; row < inputHeightDetection; ++row) {
@@ -869,59 +937,62 @@ int main(){
     std::vector<float> prob;
     prob.resize(1*OUTPUT_SIZE);
 
-    cudaMemcpyAsync( buffers[inputIndex], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
+    cudaMemcpyAsync( buffers[0], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
     // context->setBindingDimensions(0, nvinfer1::Dims4(1, 3, inputHeightDetection, inputWidthDetection));
     // context->enqueueV2(buffers, stream, nullptr);
-    context->enqueue(1, buffers, stream, nullptr);
-
-    auto shape = engine->getTensorShape(kOutputTensorName);
-
-    // std::cout << std::endl;
-    // for (int i = 0; i < shape.nbDims; ++i) {
-    //     std::cout << shape.d[i] << " ";
-    // }
-    // std::cout << std::endl;
-
-    CUDA_CHECK(cudaMemcpyAsync( prob.data(), buffers[outputIndex], OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream ));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-
-    auto begin = std::chrono::system_clock::now();
-    cv::resize(origin_img, img, cv::Size(inputWidthDetection, inputHeightDetection));
-
-    index = 0;
-    for (int row = 0; row < inputHeightDetection; ++row) {
-        uchar *uc_pixel = img.data + row * img.step;
-        for (int col = 0; col < inputWidthDetection; ++col) {
-            data[index] = (float) uc_pixel[2] / 255.0;
-            data[index + inputHeightDetection * inputWidthDetection] = (float) uc_pixel[1] / 255.0;
-            data[index + 2 * inputHeightDetection * inputWidthDetection] = (float) uc_pixel[0] / 255.0;
-            uc_pixel += 3;
-            ++index;
-        }
-    }
-
-    cudaMemcpyAsync( buffers[inputIndex], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
-    // context->setBindingDimensions(0, nvinfer1::Dims4(1, 3, inputHeightDetection, inputWidthDetection));
-    // context->enqueueV2(buffers, stream, nullptr);
-    context->enqueue(1, buffers, stream, nullptr);
+    context->enqueueV3(stream);
 
     // auto shape = engine->getTensorShape(kOutputTensorName);
     //
+    // std::cout << std::endl;
     // for (int i = 0; i < shape.nbDims; ++i) {
     //     std::cout << shape.d[i] << " ";
     // }
-    //
     // std::cout << std::endl;
 
-    CUDA_CHECK(cudaMemcpyAsync( prob.data(), buffers[outputIndex], OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream ));
+    CUDA_CHECK(cudaMemcpyAsync( prob.data(), buffers[1], OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream ));
     CUDA_CHECK(cudaStreamSynchronize(stream));
+
+
+    // auto begin = std::chrono::system_clock::now();
+    // cv::resize(origin_img, img, cv::Size(inputWidthDetection, inputHeightDetection));
+    //
+    // index = 0;
+    // for (int row = 0; row < inputHeightDetection; ++row) {
+    //     uchar *uc_pixel = img.data + row * img.step;
+    //     for (int col = 0; col < inputWidthDetection; ++col) {
+    //         data[index] = (float) uc_pixel[2] / 255.0;
+    //         data[index + inputHeightDetection * inputWidthDetection] = (float) uc_pixel[1] / 255.0;
+    //         data[index + 2 * inputHeightDetection * inputWidthDetection] = (float) uc_pixel[0] / 255.0;
+    //         uc_pixel += 3;
+    //         ++index;
+    //     }
+    // }
+    //
+    // cudaMemcpyAsync( buffers[inputIndex], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
+    // // context->setBindingDimensions(0, nvinfer1::Dims4(1, 3, inputHeightDetection, inputWidthDetection));
+    // // context->enqueueV2(buffers, stream, nullptr);
+    // context->enqueue(1, buffers, stream, nullptr);
+    //
+    // // auto shape = engine->getTensorShape(kOutputTensorName);
+    // //
+    // // for (int i = 0; i < shape.nbDims; ++i) {
+    // //     std::cout << shape.d[i] << " ";
+    // // }
+    // //
+    // // std::cout << std::endl;
+    //
+    // CUDA_CHECK(cudaMemcpyAsync( prob.data(), buffers[outputIndex], OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream ));
+    // CUDA_CHECK(cudaStreamSynchronize(stream));
     //
     //
     // // for (int i = prob.size()-21; i < prob.size(); ++i) {
     // //     std::cout << prob[i] << " ";
     // // }
     //
+
+    std::cout << prob[0] << std::endl;
+
     // // nms
     std::vector<std::vector<Detection>> batch_res(1);
     for (int b = 0; b < 1; b++) {
@@ -929,13 +1000,16 @@ int main(){
         nms(res, &prob[b * OUTPUT_SIZE], CONF_THRESH, NMS_THRESH);
     }
 
-    auto end = std::chrono::system_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
-    std::cout << "inference time: " << duration.count() << " ms" << std::endl;
+    // auto end = std::chrono::system_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+    // std::cout << "inference time: " << duration.count() << " ms" << std::endl;
 
     std::cout << "num of boxes: " << batch_res[0].size() << std::endl;
 
     draw_bbox(origin_img, batch_res[0]);
+
+    // cv::resize(origin_img, origin_img, cv::Size(1200, 1920));
+    // cv::resize(origin_img, origin_img, cv::Size(1920, 1200));
 
     cv::imwrite("result.jpg", origin_img);
 

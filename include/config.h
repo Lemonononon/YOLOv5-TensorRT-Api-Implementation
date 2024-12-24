@@ -3,7 +3,7 @@
 const static int kNumClass = 3;
 const static int kNumAnchor = 3;
 const static float kIgnoreThresh = 0.1f;
-const static int kMaxNumOutputBbox = 1000;
+const static int kMaxNumOutputBbox = 3000;
 
 // /* --------------------------------------------------------
 //  * These configs are related to tensorrt model, if these are changed,
