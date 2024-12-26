@@ -122,17 +122,17 @@ ILayer* addConvBNLeaky( INetworkDefinition *network, std::map<std::string, Weigh
 
 ILayer* addFocus( INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int input_h, int input_w, int output_c, int kernel_size, int stride, int g ){
 
-    auto shape = input.getDimensions();
+    // auto shape = input.getDimensions();
+    //
+    // ISliceLayer *s1 = network->addSlice(input, Dims4{0, 0, 0, 0}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    // ISliceLayer *s2 = network->addSlice(input, Dims4{0, 0, 1, 0}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    // ISliceLayer *s3 = network->addSlice(input, Dims4{0, 0, 0, 1}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    // ISliceLayer *s4 = network->addSlice(input, Dims4{0, 0, 1, 1}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
 
-    ISliceLayer *s1 = network->addSlice(input, Dims4{0, 0, 0, 0}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-    ISliceLayer *s2 = network->addSlice(input, Dims4{0, 0, 1, 0}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-    ISliceLayer *s3 = network->addSlice(input, Dims4{0, 0, 0, 1}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-    ISliceLayer *s4 = network->addSlice(input, Dims4{0, 0, 1, 1}, Dims4{shape.d[0], 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-
-    // ISliceLayer *s1 = network->addSlice(input, Dims4{0, 0, 0, 0}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-    // ISliceLayer *s2 = network->addSlice(input, Dims4{0, 0, 1, 0}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-    // ISliceLayer *s3 = network->addSlice(input, Dims4{0, 0, 0, 1}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
-    // ISliceLayer *s4 = network->addSlice(input, Dims4{0, 0, 1, 1}, Dims4{-1, 3, input_h / 2, input_w / 2}, Dims4{1, 1, 2, 2});
+    ISliceLayer *s1 = network->addSlice(input, Dims3{ 0, 0, 0}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
+    ISliceLayer *s2 = network->addSlice(input, Dims3{ 0, 1, 0}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
+    ISliceLayer *s3 = network->addSlice(input, Dims3{ 0, 0, 1}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
+    ISliceLayer *s4 = network->addSlice(input, Dims3{ 0, 1, 1}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
     ITensor* inputTensors[] = {s1->getOutput(0), s2->getOutput(0), s3->getOutput(0), s4->getOutput(0)};
     auto cat = network->addConcatenation(inputTensors, 4);
 
@@ -303,11 +303,12 @@ void printTensor(const char* name, ITensor* tensor) {
 
 IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
 
-    INetworkDefinition* network = builder->createNetworkV2(1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
+    INetworkDefinition* network = builder->createNetworkV2(0U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
+    // INetworkDefinition* network = builder->createNetworkV2(0);
 
     // Create input tensor of shape {3, kInputH, kInputW}
-    // ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
-    ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
+    ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+    // ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
 
     std::map<std::string, Weights> weightMap = loadWeights(wts_path);
     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
@@ -362,12 +363,13 @@ IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize,
     conv11->setPaddingNd(DimsHW{0, 0});
     // printTensor("conv11", conv11->getOutput(0));
 
-    float scale[] = {1.0, 1.0, 2.0, 2.0};
+    // float scale[] = {1.0, 1.0, 2.0, 2.0};
+    float scale[] = {1.0, 2.0, 2.0};
     //upsample12 scale_factor = 2
     auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
     // upsample12->setResizeMode(ResizeMode::kNEAREST);
     upsample12->setResizeMode(InterpolationMode::kNEAREST);
-    upsample12->setScales(scale, 4);
+    upsample12->setScales(scale, 3);
     // printTensor("upsample12", upsample12->getOutput(0));
 
     ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
@@ -397,7 +399,7 @@ IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize,
     // upsample 17
     auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
     upsample17->setResizeMode(InterpolationMode::kNEAREST);
-    upsample17->setScales(scale, 4);
+    upsample17->setScales(scale, 3);
     // printTensor("upsample17", upsample17->getOutput(0));
 
 
@@ -830,7 +832,7 @@ int main(){
     // std::string engine_path = "../weights/yolov5s_platelet.engine";
     std::string engine_path = "../weights/yolov5m_red.engine";
     bool need_build = false;
-    need_build = true;
+    // need_build = true;
 
     initLibNvInferPlugins(&gLogger, "");
 
@@ -843,7 +845,7 @@ int main(){
         IBuilderConfig* config = builder->createBuilderConfig();
 
         // auto engine_data = build_engine_s( 1, 40, 100, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5s_platelet.wts");
-        auto engine_data = build_engine( 1, 1, 1, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m_red_20241219.wts");
+        auto engine_data = build_engine( 1, 4, 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m_red_20241219.wts");
 
         std::ofstream ofs(engine_path, std::ios::binary);
         if (!ofs){
@@ -898,8 +900,8 @@ int main(){
     CUDA_CHECK(cudaMalloc(&buffers[0], batchSizeDetection * 3 * inputHeightDetection * inputWidthDetection * sizeof(float))); //对gpu进行显存分配
     CUDA_CHECK(cudaMalloc(&buffers[1], batchSizeDetection * OUTPUT_SIZE * sizeof(float)));
 
-    context->setInputTensorAddress(kInputTensorName, buffers[0]);
-    context->setOutputTensorAddress(kOutputTensorName, buffers[1]);
+    // context->setInputTensorAddress(kInputTensorName, buffers[0]);
+    // context->setOutputTensorAddress(kOutputTensorName, buffers[1]);
 
     // red
     float CONF_THRESH = 0.5;
@@ -938,9 +940,10 @@ int main(){
     prob.resize(1*OUTPUT_SIZE);
 
     cudaMemcpyAsync( buffers[0], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
+    context->enqueue(1, buffers, stream, nullptr);
     // context->setBindingDimensions(0, nvinfer1::Dims4(1, 3, inputHeightDetection, inputWidthDetection));
     // context->enqueueV2(buffers, stream, nullptr);
-    context->enqueueV3(stream);
+    // // context->enqueueV3(stream);
 
     // auto shape = engine->getTensorShape(kOutputTensorName);
     //
