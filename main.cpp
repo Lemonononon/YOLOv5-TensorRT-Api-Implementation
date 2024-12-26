@@ -828,7 +828,7 @@ void draw_bbox(std::vector<cv::Mat>& img_batch, std::vector<std::vector<Detectio
 int main(){
 
     // std::string engine_path = "../weights/yolov5s_platelet.engine";
-    std::string engine_path = "../weights/yolov5m_red.engine";
+    std::string engine_path = "../weights/yolov5m_red_d.engine";
     bool need_build = false;
     need_build = true;
 
