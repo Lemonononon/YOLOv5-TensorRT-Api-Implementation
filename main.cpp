@@ -436,6 +436,8 @@ IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize,
     //
     // // builder->setMaxBatchSize(maxBatchSize);
     // config->addOptimizationProfile(profile);
+
+    builder->setMaxBatchSize(maxBatchSize);
     config->setFlag(BuilderFlag::kFP16);
     auto engine = builder->buildSerializedNetwork(*network, *config);
 
