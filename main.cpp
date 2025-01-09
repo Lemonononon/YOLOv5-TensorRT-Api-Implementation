@@ -133,6 +133,29 @@ ILayer* addFocus( INetworkDefinition* network, std::map<std::string, Weights>& w
     ISliceLayer *s2 = network->addSlice(input, Dims3{ 0, 1, 0}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
     ISliceLayer *s3 = network->addSlice(input, Dims3{ 0, 0, 1}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
     ISliceLayer *s4 = network->addSlice(input, Dims3{ 0, 1, 1}, Dims3{ 3, input_h / 2, input_w / 2}, Dims3{ 1, 2, 2});
+
+
+    auto shape = network->addShape(*network->getInput(0))->getOutput(0);
+
+    auto shapeInt32Layer = network->addIdentity(*shape);
+    shapeInt32Layer->setOutputType(0, DataType::kINT32);
+    auto shapeInt32 = shapeInt32Layer->getOutput(0);
+
+
+    int32_t subSliceValue[4] = {0, 0, kInputH/2, kInputW/2};
+    Weights subSliceWeight{DataType::kINT32, subSliceValue, 4};
+
+    auto constLayer = network->addConstant(Dims{1, {4}}, subSliceWeight);
+
+    auto elementLayer = network->addElementWise(*shapeInt32, *constLayer->getOutput(0), ElementWiseOperation::kSUB);
+
+    auto newShape = elementLayer->getOutput(0);
+
+    s1->setInput(2, *newShape);
+    s2->setInput(2, *newShape);
+    s3->setInput(2, *newShape);
+    s4->setInput(2, *newShape);
+
     ITensor* inputTensors[] = {s1->getOutput(0), s2->getOutput(0), s3->getOutput(0), s4->getOutput(0)};
     auto cat = network->addConcatenation(inputTensors, 4);
 
@@ -301,354 +324,354 @@ void printTensor(const char* name, ITensor* tensor) {
     std::cout <<std::endl;
 }
 
-IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
-
-    INetworkDefinition* network = builder->createNetworkV2(0U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
-    // INetworkDefinition* network = builder->createNetworkV2(0);
-
-    // Create input tensor of shape {3, kInputH, kInputW}
-    ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
-    // ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
-
-    std::map<std::string, Weights> weightMap = loadWeights(wts_path);
-    Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
-
-    // bakcbone
-    auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 48, 3, 1, 1 );
-    // printTensor("focus0", focus0->getOutput(0));
-
-    auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 96, 3, 2, 1,"model.1" );
-    // printTensor("conv1", conv1->getOutput(0));
-    // conv1->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv1->getOutput(0));
-
-    auto bottleneck2 = addBottleneckBlock( network, weightMap, *conv1->getOutput(0), 96, 96, 2, true, 1, 0.5, "model.2" );
-    // printTensor("bottleneck2", bottleneck2->getOutput(0));
-    // bottleneck2->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*bottleneck2->getOutput(0));
-
-    auto conv3 = addConvBNLeaky( network, weightMap, *bottleneck2->getOutput(0), 192, 3, 2, 1, "model.3" );
-    // printTensor("conv3", conv3->getOutput(0));
-
-    auto bottleneck_csp4 = addBottleneckCSP( network, weightMap, *conv3->getOutput(0), 192, 192, 6, true, 1, 0.5, "model.4" );
-    // printTensor("bottleneck_csp4", bottleneck_csp4->getOutput(0));
-
-    auto conv5 = addConvBNLeaky( network, weightMap, *bottleneck_csp4->getOutput(0), 384, 3, 2, 1, "model.5" );
-    // printTensor("conv5", conv5->getOutput(0));
-    // conv5->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv5->getOutput(0));
-
-
-    auto bottleneck_csp6 = addBottleneckCSP( network, weightMap, *conv5->getOutput(0), 384, 384, 6, true, 1, 0.5, "model.6" );
-    // printTensor("bottleneck_csp6", bottleneck_csp6->getOutput(0));
-
-    auto conv7 = addConvBNLeaky( network, weightMap, *bottleneck_csp6->getOutput(0), 768, 3, 2, 1, "model.7");
-    // printTensor("conv7", conv7->getOutput(0));
-
-    auto spp8 = addSPP( network, weightMap, *conv7->getOutput(0), 768, 768, {5, 9, 13}, "model.8" );
-    // printTensor("spp8", spp8->getOutput(0));
-
-    auto bottleneck_csp9 = addBottleneckCSP( network, weightMap, *spp8->getOutput(0), 768, 768, 4, true, 1, 0.5, "model.9" );
-    // printTensor("bottleneck_csp9", bottleneck_csp9->getOutput(0));
-
-    // // head  wrong
-    auto bottleneck_csp10 = addBottleneckCSP( network, weightMap, *bottleneck_csp9->getOutput(0), 768, 768, 2, false, 1, 0.5, "model.10" );
-    // printTensor("bottleneck_csp10", bottleneck_csp10->getOutput(0));
-    // bottleneck_csp10->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*bottleneck_csp10->getOutput(0));
-
-    auto conv11 = network->addConvolutionNd( *bottleneck_csp10->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.11.weight"], weightMap["model.11.bias"]);
-    conv11->setName("conv.11");
-    conv11->setStrideNd(DimsHW{1, 1});
-    conv11->setPaddingNd(DimsHW{0, 0});
-    // printTensor("conv11", conv11->getOutput(0));
-
-    // float scale[] = {1.0, 1.0, 2.0, 2.0};
-    float scale[] = {1.0, 2.0, 2.0};
-    //upsample12 scale_factor = 2
-    auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
-    // upsample12->setResizeMode(ResizeMode::kNEAREST);
-    upsample12->setResizeMode(InterpolationMode::kNEAREST);
-    upsample12->setScales(scale, 3);
-    // printTensor("upsample12", upsample12->getOutput(0));
-
-    ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
-    auto cat13 = network->addConcatenation(inputTensorsCat13, 2);
-    // printTensor("cat13", cat13->getOutput(0));
-    // cat13->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*cat13->getOutput(0));
-
-    //
-    //
-    //
-    auto conv14 = addConvBNLeaky( network, weightMap, *cat13->getOutput(0), 384, 1, 1, 1, "model.14" );
-    // printTensor("conv14", conv14->getOutput(0));
-    // conv14->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv14->getOutput(0));
-
-
-    auto bottleneck_csp15 = addBottleneckCSP( network, weightMap, *conv14->getOutput(0), 384, 384, 2, false, 1, 0.5, "model.15" );
-    // printTensor("bottleneck_csp15", bottleneck_csp15->getOutput(0));
-
-    auto conv16 = network->addConvolutionNd( *bottleneck_csp15->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.16.weight"], weightMap["model.16.bias"]);
-    // printTensor("conv16", conv16->getOutput(0));
-
-    // conv16->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv16->getOutput(0));
-
-    // upsample 17
-    auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
-    upsample17->setResizeMode(InterpolationMode::kNEAREST);
-    upsample17->setScales(scale, 3);
-    // printTensor("upsample17", upsample17->getOutput(0));
-
-
-    ITensor* inputTensorsCat18[] = {upsample17->getOutput(0), bottleneck_csp4->getOutput(0)};
-    auto cat18 = network->addConcatenation(inputTensorsCat18, 2);
-    // printTensor("cat18", cat18->getOutput(0));
-    // cat18->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*cat18->getOutput(0));
-
-    auto conv19 = addConvBNLeaky(network, weightMap, *cat18->getOutput(0), 192, 1, 1, 1, "model.19");
-    // printTensor("conv19", conv19->getOutput(0));
-    // conv19->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv19->getOutput(0));
-
-    auto bottleneck_csp20 = addBottleneckCSP( network, weightMap, *conv19->getOutput(0), 192, 192, 2, false, 1, 0.5, "model.20" );
-    // printTensor("bottleneck_csp20", bottleneck_csp20->getOutput(0));
-    // bottleneck_csp20->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*bottleneck_csp20->getOutput(0));
-
-    auto conv21 = network->addConvolutionNd( *bottleneck_csp20->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.21.weight"], weightMap["model.21.bias"]);
-    // printTensor("conv21", conv21->getOutput(0));
-
-    // // Detect plugin
-    auto yolo = addYololayer( network, weightMap, "model.22", {conv21, conv16, conv11} );
-
-    yolo->getOutput(0)->setName(kOutputTensorName);
-    network->markOutput(*yolo->getOutput(0));
-
-    // auto profile = builder->createOptimizationProfile();
-    //
-    // profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
-    // profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
-    // profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
-    //
-    // // builder->setMaxBatchSize(maxBatchSize);
-    // config->addOptimizationProfile(profile);
-
-    builder->setMaxBatchSize(maxBatchSize);
-    config->setFlag(BuilderFlag::kFP16);
-    auto engine = builder->buildSerializedNetwork(*network, *config);
-
-    return engine;
-
-}
-
-IHostMemory* build_engine_s( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
-
-    INetworkDefinition* network = builder->createNetworkV2(1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
-
-    // Create input tensor of shape {3, kInputH, kInputW}
-    // ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
-    ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
-
-    std::map<std::string, Weights> weightMap = loadWeights(wts_path);
-    Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
-
-    // bakcbone
-    auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 32, 3 , 1, 1 );
-    focus0->setName("focus0");
-    // printTensor("focus0", focus0->getOutput(0));
-
-    // focus0->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*focus0->getOutput(0));
-    //
-    // auto shape = focus0->getOutput(0)->getDimensions();
-    //
-    // for (int i = 0; i < shape.nbDims; ++i) {
-    //     std::cout << shape.d[i] << " ";
-    // }
-    //
-    // std::cout << std::endl;
-
-
-
-
-    auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 64, 3, 2, 1,"model.1" );
-    conv1->setName("conv1");
-    // printTensor("conv1", conv1->getOutput(0));
-    // conv1->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv1->getOutput(0));
-
-    auto bottleneck2 = addBottleneckBlock( network, weightMap, *conv1->getOutput(0), 64, 64, 1, true, 1, 0.5, "model.2",
-                                           false );
-    bottleneck2->setName("bottleneck2");
-    // printTensor("bottleneck2", bottleneck2->getOutput(0));
-    // bottleneck2->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*bottleneck2->getOutput(0));
-
-    auto conv3 = addConvBNLeaky( network, weightMap, *bottleneck2->getOutput(0), 128, 3, 2, 1, "model.3" );
-    conv3->setName("conv3");
-    // printTensor("conv3", conv3->getOutput(0));
-
-    // conv3->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv3->getOutput(0));
-    //
-    // auto shape = conv3->getOutput(0)->getDimensions();
-    //
-    // for (int i = 0; i < shape.nbDims; ++i) {
-    //     std::cout << shape.d[i] << " ";
-    // }
-    //
-    // std::cout << std::endl;
-
-
-    auto bottleneck_csp4 = addBottleneckCSP( network, weightMap, *conv3->getOutput(0), 128, 128, 3, true, 1, 0.5, "model.4" );
-    bottleneck_csp4->setName("bottleneck_csp4");
-    // printTensor("bottleneck_csp4", bottleneck_csp4->getOutput(0));
-
-    auto conv5 = addConvBNLeaky( network, weightMap, *bottleneck_csp4->getOutput(0), 256, 3, 2, 1, "model.5" );
-    conv5->setName("conv5");
-    // // printTensor("conv5", conv5->getOutput(0));
-    // conv5->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv5->getOutput(0));
-    //
-    // auto shape = conv5->getOutput(0)->getDimensions();
-    //
-    // for (int i = 0; i < shape.nbDims; ++i) {
-    //     std::cout << shape.d[i] << " ";
-    // }
-    //
-    // std::cout << std::endl;
-
-
-    auto bottleneck_csp6 = addBottleneckCSP( network, weightMap, *conv5->getOutput(0), 256, 256, 3, true, 1, 0.5, "model.6" );
-    bottleneck_csp6->setName("bottleneck_csp6");
-    // printTensor("bottleneck_csp6", bottleneck_csp6->getOutput(0));
-
-    auto conv7 = addConvBNLeaky( network, weightMap, *bottleneck_csp6->getOutput(0), 512, 3, 2, 1, "model.7");
-    conv7->setName("conv7");
-    // printTensor("conv7", conv7->getOutput(0));
-
-    auto spp8 = addSPP( network, weightMap, *conv7->getOutput(0), 512, 512, {5, 9, 13}, "model.8" );
-    spp8->setName("spp8");
-    // printTensor("spp8", spp8->getOutput(0));
-
-    auto bottleneck_csp9 = addBottleneckCSP( network, weightMap, *spp8->getOutput(0), 512, 512, 2, true, 1, 0.5, "model.9" );
-    bottleneck_csp9->setName("bottleneck_csp9");
-    // printTensor("bottleneck_csp9", bottleneck_csp9->getOutput(0));
-
-    // // head  wrong
-    auto bottleneck_csp10 = addBottleneckCSP( network, weightMap, *bottleneck_csp9->getOutput(0), 512, 512, 1, false, 1, 0.5, "model.10" );
-    bottleneck_csp10->setName("bottleneck_csp10");
-    // printTensor("bottleneck_csp10", bottleneck_csp10->getOutput(0));
-    // bottleneck_csp10->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*bottleneck_csp10->getOutput(0));
-
-    auto conv11 = network->addConvolutionNd( *bottleneck_csp10->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.11.weight"], weightMap["model.11.bias"]);
-    conv11->setName("conv.11");
-    conv11->setStrideNd(DimsHW{1, 1});
-    conv11->setPaddingNd(DimsHW{0, 0});
-    // printTensor("conv11", conv11->getOutput(0));
-
-    float scale[] = {1.0, 2.0, 2.0};
-    //upsample12 scale_factor = 2
-    auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
-    upsample12->setName("upsample12");
-    upsample12->setResizeMode(InterpolationMode::kNEAREST);
-    upsample12->setScales(scale, 3);
-    // printTensor("upsample12", upsample12->getOutput(0));
-
-    ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
-    auto cat13 = network->addConcatenation(inputTensorsCat13, 2);
-    cat13->setName("cat13");
-    // printTensor("cat13", cat13->getOutput(0));
-    // cat13->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*cat13->getOutput(0));
-
-    //
-    //
-    //
-    auto conv14 = addConvBNLeaky( network, weightMap, *cat13->getOutput(0), 256, 1, 1, 1, "model.14" );
-    conv14->setName("conv14");
-    // printTensor("conv14", conv14->getOutput(0));
-    // conv14->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv14->getOutput(0));
-
-
-    auto bottleneck_csp15 = addBottleneckCSP( network, weightMap, *conv14->getOutput(0), 256, 256, 1, false, 1, 0.5, "model.15" );
-    bottleneck_csp15->setName("bottleneck_csp15");
-    // printTensor("bottleneck_csp15", bottleneck_csp15->getOutput(0));
-
-    auto conv16 = network->addConvolutionNd( *bottleneck_csp15->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.16.weight"], weightMap["model.16.bias"]);
-    conv16->setName("conv16");
-    // printTensor("conv16", conv16->getOutput(0));
-
-    // conv16->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv16->getOutput(0));
-
-    // upsample 17
-    auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
-    upsample17->setName("upsample17");
-    upsample17->setResizeMode(InterpolationMode::kNEAREST);
-    upsample17->setScales(scale, 3);
-    // printTensor("upsample17", upsample17->getOutput(0));
-
-
-    ITensor* inputTensorsCat18[] = {upsample17->getOutput(0), bottleneck_csp4->getOutput(0)};
-    auto cat18 = network->addConcatenation(inputTensorsCat18, 2);
-    cat18->setName("cat18");
-    // printTensor("cat18", cat18->getOutput(0));
-    // cat18->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*cat18->getOutput(0));
-
-    auto conv19 = addConvBNLeaky(network, weightMap, *cat18->getOutput(0), 128, 1, 1, 1, "model.19");
-    conv19->setName("conv19");
-    // printTensor("conv19", conv19->getOutput(0));
-    // conv19->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv19->getOutput(0));
-
-    auto bottleneck_csp20 = addBottleneckCSP( network, weightMap, *conv19->getOutput(0), 128, 128, 1, false, 1, 0.5, "model.20" );
-    bottleneck_csp20->setName("bottleneck_csp20");
-    // printTensor("bottleneck_csp20", bottleneck_csp20->getOutput(0));
-    // bottleneck_csp20->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*bottleneck_csp20->getOutput(0));
-
-    auto conv21 = network->addConvolutionNd( *bottleneck_csp20->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.21.weight"], weightMap["model.21.bias"]);
-    conv21->setName("conv21");
-    // // printTensor("conv21", conv21->getOutput(0));
-    // conv21->getOutput(0)->setName(kOutputTensorName);
-    // network->markOutput(*conv21->getOutput(0));
-    //
-    // auto shape = conv21->getOutput(0)->getDimensions();
-    //
-    // for (int i = 0; i < shape.nbDims; ++i) {
-    //     std::cout << shape.d[i] << " ";
-    // }
-    // std::cout << std::endl;
-
-
-    // // Detect plugin
-    auto yolo = addYololayer( network, weightMap, "model.22", {conv21, conv16, conv11} );
-    yolo->setName("yolo");
-
-    yolo->getOutput(0)->setName(kOutputTensorName);
-    network->markOutput(*yolo->getOutput(0));
-
-    auto profile = builder->createOptimizationProfile();
-
-    profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
-    profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
-    profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
-
-    config->addOptimizationProfile(profile);
-    // builder->setMaxBatchSize(maxBatchSize);
-    config->setFlag(BuilderFlag::kFP16);
-    auto engine = builder->buildSerializedNetwork(*network, *config);
-
-    return engine;
-}
+// IHostMemory* build_engine( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
+//
+//     INetworkDefinition* network = builder->createNetworkV2(0U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
+//     // INetworkDefinition* network = builder->createNetworkV2(0);
+//
+//     // Create input tensor of shape {3, kInputH, kInputW}
+//     ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+//     // ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
+//
+//     std::map<std::string, Weights> weightMap = loadWeights(wts_path);
+//     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
+//
+//     // bakcbone
+//     auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 48, 3, 1, 1 );
+//     // printTensor("focus0", focus0->getOutput(0));
+//
+//     auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 96, 3, 2, 1,"model.1" );
+//     // printTensor("conv1", conv1->getOutput(0));
+//     // conv1->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv1->getOutput(0));
+//
+//     auto bottleneck2 = addBottleneckBlock( network, weightMap, *conv1->getOutput(0), 96, 96, 2, true, 1, 0.5, "model.2" );
+//     // printTensor("bottleneck2", bottleneck2->getOutput(0));
+//     // bottleneck2->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*bottleneck2->getOutput(0));
+//
+//     auto conv3 = addConvBNLeaky( network, weightMap, *bottleneck2->getOutput(0), 192, 3, 2, 1, "model.3" );
+//     // printTensor("conv3", conv3->getOutput(0));
+//
+//     auto bottleneck_csp4 = addBottleneckCSP( network, weightMap, *conv3->getOutput(0), 192, 192, 6, true, 1, 0.5, "model.4" );
+//     // printTensor("bottleneck_csp4", bottleneck_csp4->getOutput(0));
+//
+//     auto conv5 = addConvBNLeaky( network, weightMap, *bottleneck_csp4->getOutput(0), 384, 3, 2, 1, "model.5" );
+//     // printTensor("conv5", conv5->getOutput(0));
+//     // conv5->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv5->getOutput(0));
+//
+//
+//     auto bottleneck_csp6 = addBottleneckCSP( network, weightMap, *conv5->getOutput(0), 384, 384, 6, true, 1, 0.5, "model.6" );
+//     // printTensor("bottleneck_csp6", bottleneck_csp6->getOutput(0));
+//
+//     auto conv7 = addConvBNLeaky( network, weightMap, *bottleneck_csp6->getOutput(0), 768, 3, 2, 1, "model.7");
+//     // printTensor("conv7", conv7->getOutput(0));
+//
+//     auto spp8 = addSPP( network, weightMap, *conv7->getOutput(0), 768, 768, {5, 9, 13}, "model.8" );
+//     // printTensor("spp8", spp8->getOutput(0));
+//
+//     auto bottleneck_csp9 = addBottleneckCSP( network, weightMap, *spp8->getOutput(0), 768, 768, 4, true, 1, 0.5, "model.9" );
+//     // printTensor("bottleneck_csp9", bottleneck_csp9->getOutput(0));
+//
+//     // // head  wrong
+//     auto bottleneck_csp10 = addBottleneckCSP( network, weightMap, *bottleneck_csp9->getOutput(0), 768, 768, 2, false, 1, 0.5, "model.10" );
+//     // printTensor("bottleneck_csp10", bottleneck_csp10->getOutput(0));
+//     // bottleneck_csp10->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*bottleneck_csp10->getOutput(0));
+//
+//     auto conv11 = network->addConvolutionNd( *bottleneck_csp10->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.11.weight"], weightMap["model.11.bias"]);
+//     conv11->setName("conv.11");
+//     conv11->setStrideNd(DimsHW{1, 1});
+//     conv11->setPaddingNd(DimsHW{0, 0});
+//     // printTensor("conv11", conv11->getOutput(0));
+//
+//     // float scale[] = {1.0, 1.0, 2.0, 2.0};
+//     float scale[] = {1.0, 2.0, 2.0};
+//     //upsample12 scale_factor = 2
+//     auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
+//     // upsample12->setResizeMode(ResizeMode::kNEAREST);
+//     upsample12->setResizeMode(InterpolationMode::kNEAREST);
+//     upsample12->setScales(scale, 3);
+//     // printTensor("upsample12", upsample12->getOutput(0));
+//
+//     ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
+//     auto cat13 = network->addConcatenation(inputTensorsCat13, 2);
+//     // printTensor("cat13", cat13->getOutput(0));
+//     // cat13->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*cat13->getOutput(0));
+//
+//     //
+//     //
+//     //
+//     auto conv14 = addConvBNLeaky( network, weightMap, *cat13->getOutput(0), 384, 1, 1, 1, "model.14" );
+//     // printTensor("conv14", conv14->getOutput(0));
+//     // conv14->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv14->getOutput(0));
+//
+//
+//     auto bottleneck_csp15 = addBottleneckCSP( network, weightMap, *conv14->getOutput(0), 384, 384, 2, false, 1, 0.5, "model.15" );
+//     // printTensor("bottleneck_csp15", bottleneck_csp15->getOutput(0));
+//
+//     auto conv16 = network->addConvolutionNd( *bottleneck_csp15->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.16.weight"], weightMap["model.16.bias"]);
+//     // printTensor("conv16", conv16->getOutput(0));
+//
+//     // conv16->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv16->getOutput(0));
+//
+//     // upsample 17
+//     auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
+//     upsample17->setResizeMode(InterpolationMode::kNEAREST);
+//     upsample17->setScales(scale, 3);
+//     // printTensor("upsample17", upsample17->getOutput(0));
+//
+//
+//     ITensor* inputTensorsCat18[] = {upsample17->getOutput(0), bottleneck_csp4->getOutput(0)};
+//     auto cat18 = network->addConcatenation(inputTensorsCat18, 2);
+//     // printTensor("cat18", cat18->getOutput(0));
+//     // cat18->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*cat18->getOutput(0));
+//
+//     auto conv19 = addConvBNLeaky(network, weightMap, *cat18->getOutput(0), 192, 1, 1, 1, "model.19");
+//     // printTensor("conv19", conv19->getOutput(0));
+//     // conv19->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv19->getOutput(0));
+//
+//     auto bottleneck_csp20 = addBottleneckCSP( network, weightMap, *conv19->getOutput(0), 192, 192, 2, false, 1, 0.5, "model.20" );
+//     // printTensor("bottleneck_csp20", bottleneck_csp20->getOutput(0));
+//     // bottleneck_csp20->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*bottleneck_csp20->getOutput(0));
+//
+//     auto conv21 = network->addConvolutionNd( *bottleneck_csp20->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.21.weight"], weightMap["model.21.bias"]);
+//     // printTensor("conv21", conv21->getOutput(0));
+//
+//     // // Detect plugin
+//     auto yolo = addYololayer( network, weightMap, "model.22", {conv21, conv16, conv11} );
+//
+//     yolo->getOutput(0)->setName(kOutputTensorName);
+//     network->markOutput(*yolo->getOutput(0));
+//
+//     // auto profile = builder->createOptimizationProfile();
+//     //
+//     // profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
+//     // profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
+//     // profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
+//     //
+//     // // builder->setMaxBatchSize(maxBatchSize);
+//     // config->addOptimizationProfile(profile);
+//
+//     builder->setMaxBatchSize(maxBatchSize);
+//     config->setFlag(BuilderFlag::kFP16);
+//     auto engine = builder->buildSerializedNetwork(*network, *config);
+//
+//     return engine;
+//
+// }
+//
+// IHostMemory* build_engine_s( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
+//
+//     INetworkDefinition* network = builder->createNetworkV2(1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
+//
+//     // Create input tensor of shape {3, kInputH, kInputW}
+//     // ITensor* data = network->addInput(kInputTensorName, dt, Dims3{ 3, kInputH, kInputW });
+//     ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
+//
+//     std::map<std::string, Weights> weightMap = loadWeights(wts_path);
+//     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
+//
+//     // bakcbone
+//     auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 32, 3 , 1, 1 );
+//     focus0->setName("focus0");
+//     // printTensor("focus0", focus0->getOutput(0));
+//
+//     // focus0->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*focus0->getOutput(0));
+//     //
+//     // auto shape = focus0->getOutput(0)->getDimensions();
+//     //
+//     // for (int i = 0; i < shape.nbDims; ++i) {
+//     //     std::cout << shape.d[i] << " ";
+//     // }
+//     //
+//     // std::cout << std::endl;
+//
+//
+//
+//
+//     auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 64, 3, 2, 1,"model.1" );
+//     conv1->setName("conv1");
+//     // printTensor("conv1", conv1->getOutput(0));
+//     // conv1->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv1->getOutput(0));
+//
+//     auto bottleneck2 = addBottleneckBlock( network, weightMap, *conv1->getOutput(0), 64, 64, 1, true, 1, 0.5, "model.2",
+//                                            false );
+//     bottleneck2->setName("bottleneck2");
+//     // printTensor("bottleneck2", bottleneck2->getOutput(0));
+//     // bottleneck2->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*bottleneck2->getOutput(0));
+//
+//     auto conv3 = addConvBNLeaky( network, weightMap, *bottleneck2->getOutput(0), 128, 3, 2, 1, "model.3" );
+//     conv3->setName("conv3");
+//     // printTensor("conv3", conv3->getOutput(0));
+//
+//     // conv3->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv3->getOutput(0));
+//     //
+//     // auto shape = conv3->getOutput(0)->getDimensions();
+//     //
+//     // for (int i = 0; i < shape.nbDims; ++i) {
+//     //     std::cout << shape.d[i] << " ";
+//     // }
+//     //
+//     // std::cout << std::endl;
+//
+//
+//     auto bottleneck_csp4 = addBottleneckCSP( network, weightMap, *conv3->getOutput(0), 128, 128, 3, true, 1, 0.5, "model.4" );
+//     bottleneck_csp4->setName("bottleneck_csp4");
+//     // printTensor("bottleneck_csp4", bottleneck_csp4->getOutput(0));
+//
+//     auto conv5 = addConvBNLeaky( network, weightMap, *bottleneck_csp4->getOutput(0), 256, 3, 2, 1, "model.5" );
+//     conv5->setName("conv5");
+//     // // printTensor("conv5", conv5->getOutput(0));
+//     // conv5->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv5->getOutput(0));
+//     //
+//     // auto shape = conv5->getOutput(0)->getDimensions();
+//     //
+//     // for (int i = 0; i < shape.nbDims; ++i) {
+//     //     std::cout << shape.d[i] << " ";
+//     // }
+//     //
+//     // std::cout << std::endl;
+//
+//
+//     auto bottleneck_csp6 = addBottleneckCSP( network, weightMap, *conv5->getOutput(0), 256, 256, 3, true, 1, 0.5, "model.6" );
+//     bottleneck_csp6->setName("bottleneck_csp6");
+//     // printTensor("bottleneck_csp6", bottleneck_csp6->getOutput(0));
+//
+//     auto conv7 = addConvBNLeaky( network, weightMap, *bottleneck_csp6->getOutput(0), 512, 3, 2, 1, "model.7");
+//     conv7->setName("conv7");
+//     // printTensor("conv7", conv7->getOutput(0));
+//
+//     auto spp8 = addSPP( network, weightMap, *conv7->getOutput(0), 512, 512, {5, 9, 13}, "model.8" );
+//     spp8->setName("spp8");
+//     // printTensor("spp8", spp8->getOutput(0));
+//
+//     auto bottleneck_csp9 = addBottleneckCSP( network, weightMap, *spp8->getOutput(0), 512, 512, 2, true, 1, 0.5, "model.9" );
+//     bottleneck_csp9->setName("bottleneck_csp9");
+//     // printTensor("bottleneck_csp9", bottleneck_csp9->getOutput(0));
+//
+//     // // head  wrong
+//     auto bottleneck_csp10 = addBottleneckCSP( network, weightMap, *bottleneck_csp9->getOutput(0), 512, 512, 1, false, 1, 0.5, "model.10" );
+//     bottleneck_csp10->setName("bottleneck_csp10");
+//     // printTensor("bottleneck_csp10", bottleneck_csp10->getOutput(0));
+//     // bottleneck_csp10->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*bottleneck_csp10->getOutput(0));
+//
+//     auto conv11 = network->addConvolutionNd( *bottleneck_csp10->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.11.weight"], weightMap["model.11.bias"]);
+//     conv11->setName("conv.11");
+//     conv11->setStrideNd(DimsHW{1, 1});
+//     conv11->setPaddingNd(DimsHW{0, 0});
+//     // printTensor("conv11", conv11->getOutput(0));
+//
+//     float scale[] = {1.0, 2.0, 2.0};
+//     //upsample12 scale_factor = 2
+//     auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
+//     upsample12->setName("upsample12");
+//     upsample12->setResizeMode(InterpolationMode::kNEAREST);
+//     upsample12->setScales(scale, 3);
+//     // printTensor("upsample12", upsample12->getOutput(0));
+//
+//     ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
+//     auto cat13 = network->addConcatenation(inputTensorsCat13, 2);
+//     cat13->setName("cat13");
+//     // printTensor("cat13", cat13->getOutput(0));
+//     // cat13->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*cat13->getOutput(0));
+//
+//     //
+//     //
+//     //
+//     auto conv14 = addConvBNLeaky( network, weightMap, *cat13->getOutput(0), 256, 1, 1, 1, "model.14" );
+//     conv14->setName("conv14");
+//     // printTensor("conv14", conv14->getOutput(0));
+//     // conv14->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv14->getOutput(0));
+//
+//
+//     auto bottleneck_csp15 = addBottleneckCSP( network, weightMap, *conv14->getOutput(0), 256, 256, 1, false, 1, 0.5, "model.15" );
+//     bottleneck_csp15->setName("bottleneck_csp15");
+//     // printTensor("bottleneck_csp15", bottleneck_csp15->getOutput(0));
+//
+//     auto conv16 = network->addConvolutionNd( *bottleneck_csp15->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.16.weight"], weightMap["model.16.bias"]);
+//     conv16->setName("conv16");
+//     // printTensor("conv16", conv16->getOutput(0));
+//
+//     // conv16->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv16->getOutput(0));
+//
+//     // upsample 17
+//     auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
+//     upsample17->setName("upsample17");
+//     upsample17->setResizeMode(InterpolationMode::kNEAREST);
+//     upsample17->setScales(scale, 3);
+//     // printTensor("upsample17", upsample17->getOutput(0));
+//
+//
+//     ITensor* inputTensorsCat18[] = {upsample17->getOutput(0), bottleneck_csp4->getOutput(0)};
+//     auto cat18 = network->addConcatenation(inputTensorsCat18, 2);
+//     cat18->setName("cat18");
+//     // printTensor("cat18", cat18->getOutput(0));
+//     // cat18->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*cat18->getOutput(0));
+//
+//     auto conv19 = addConvBNLeaky(network, weightMap, *cat18->getOutput(0), 128, 1, 1, 1, "model.19");
+//     conv19->setName("conv19");
+//     // printTensor("conv19", conv19->getOutput(0));
+//     // conv19->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv19->getOutput(0));
+//
+//     auto bottleneck_csp20 = addBottleneckCSP( network, weightMap, *conv19->getOutput(0), 128, 128, 1, false, 1, 0.5, "model.20" );
+//     bottleneck_csp20->setName("bottleneck_csp20");
+//     // printTensor("bottleneck_csp20", bottleneck_csp20->getOutput(0));
+//     // bottleneck_csp20->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*bottleneck_csp20->getOutput(0));
+//
+//     auto conv21 = network->addConvolutionNd( *bottleneck_csp20->getOutput(0), 21, DimsHW{1, 1}, weightMap["model.21.weight"], weightMap["model.21.bias"]);
+//     conv21->setName("conv21");
+//     // // printTensor("conv21", conv21->getOutput(0));
+//     // conv21->getOutput(0)->setName(kOutputTensorName);
+//     // network->markOutput(*conv21->getOutput(0));
+//     //
+//     // auto shape = conv21->getOutput(0)->getDimensions();
+//     //
+//     // for (int i = 0; i < shape.nbDims; ++i) {
+//     //     std::cout << shape.d[i] << " ";
+//     // }
+//     // std::cout << std::endl;
+//
+//
+//     // // Detect plugin
+//     auto yolo = addYololayer( network, weightMap, "model.22", {conv21, conv16, conv11} );
+//     yolo->setName("yolo");
+//
+//     yolo->getOutput(0)->setName(kOutputTensorName);
+//     network->markOutput(*yolo->getOutput(0));
+//
+//     auto profile = builder->createOptimizationProfile();
+//
+//     profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
+//     profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
+//     profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
+//
+//     config->addOptimizationProfile(profile);
+//     // builder->setMaxBatchSize(maxBatchSize);
+//     config->setFlag(BuilderFlag::kFP16);
+//     auto engine = builder->buildSerializedNetwork(*network, *config);
+//
+//     return engine;
+// }
 
 void deserialize_engine(std::string& engine_name, IRuntime** runtime, ICudaEngine** engine, IExecutionContext** context) {
     std::ifstream file(engine_name, std::ios::binary);
@@ -828,6 +851,7 @@ void draw_bbox(std::vector<cv::Mat>& img_batch, std::vector<std::vector<Detectio
     }
 }
 
+IHostMemory* build_engine_dynamic( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path );
 
 int main(){
 
@@ -847,7 +871,8 @@ int main(){
         IBuilderConfig* config = builder->createBuilderConfig();
 
         // auto engine_data = build_engine_s( 1, 40, 100, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5s_platelet.wts");
-        auto engine_data = build_engine( 1, 4, 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m_red_20241219.wts");
+        // auto engine_data = build_engine( 1, 4, 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m_red_20241219.wts");
+        auto engine_data = build_engine_dynamic( 1, 4, 4, builder, config, DataType::kFLOAT, "/home/xiaoying/code/yolov5_trt_api/weights/yolov5m_red_20241219.wts");
 
         std::ofstream ofs(engine_path, std::ios::binary);
         if (!ofs){
@@ -942,10 +967,10 @@ int main(){
     prob.resize(1*OUTPUT_SIZE);
 
     cudaMemcpyAsync( buffers[0], data.data(), 1 * 3 * inputHeightDetection * inputWidthDetection * sizeof(float), cudaMemcpyHostToDevice, stream );
-    context->enqueue(1, buffers, stream, nullptr);
+    // context->enqueue(1, buffers, stream, nullptr);
     // context->setBindingDimensions(0, nvinfer1::Dims4(1, 3, inputHeightDetection, inputWidthDetection));
     // context->enqueueV2(buffers, stream, nullptr);
-    // // context->enqueueV3(stream);
+    context->enqueueV3(stream);
 
     // auto shape = engine->getTensorShape(kOutputTensorName);
     //
@@ -1017,5 +1042,149 @@ int main(){
     // cv::resize(origin_img, origin_img, cv::Size(1920, 1200));
 
     cv::imwrite("result.jpg", origin_img);
+
+}
+
+IHostMemory* build_engine_dynamic( int minBatchSize, int optBatchSize, int maxBatchSize, IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path ){
+
+    INetworkDefinition* network = builder->createNetworkV2(1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH));
+    // INetworkDefinition* network = builder->createNetworkV2(0);
+
+    // Create input tensor of shape {3, kInputH, kInputW}
+    ITensor* data = network->addInput(kInputTensorName, dt, Dims4{-1, 3, kInputH, kInputW });
+    // ITensor* data = network->addInput(kInputTensorName, dt, Dims4{maxBatchSize, 3, kInputH, kInputW});
+
+    std::map<std::string, Weights> weightMap = loadWeights(wts_path);
+    Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
+
+    // bakcbone
+    auto focus0 = addFocus( network, weightMap, *data, kInputH, kInputW, 48, 3, 1, 1 );
+    // printTensor("focus0", focus0->getOutput(0));
+
+    auto conv1 = addConvBNLeaky( network, weightMap, *focus0->getOutput(0), 96, 3, 2, 1,"model.1" );
+    // printTensor("conv1", conv1->getOutput(0));
+    // conv1->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv1->getOutput(0));
+
+    auto bottleneck2 = addBottleneckBlock( network, weightMap, *conv1->getOutput(0), 96, 96, 2, true, 1, 0.5, "model.2" );
+    // printTensor("bottleneck2", bottleneck2->getOutput(0));
+    // bottleneck2->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*bottleneck2->getOutput(0));
+
+    auto conv3 = addConvBNLeaky( network, weightMap, *bottleneck2->getOutput(0), 192, 3, 2, 1, "model.3" );
+    // printTensor("conv3", conv3->getOutput(0));
+
+    auto bottleneck_csp4 = addBottleneckCSP( network, weightMap, *conv3->getOutput(0), 192, 192, 6, true, 1, 0.5, "model.4" );
+    // printTensor("bottleneck_csp4", bottleneck_csp4->getOutput(0));
+
+    auto conv5 = addConvBNLeaky( network, weightMap, *bottleneck_csp4->getOutput(0), 384, 3, 2, 1, "model.5" );
+    // printTensor("conv5", conv5->getOutput(0));
+    // conv5->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv5->getOutput(0));
+
+
+    auto bottleneck_csp6 = addBottleneckCSP( network, weightMap, *conv5->getOutput(0), 384, 384, 6, true, 1, 0.5, "model.6" );
+    // printTensor("bottleneck_csp6", bottleneck_csp6->getOutput(0));
+
+    auto conv7 = addConvBNLeaky( network, weightMap, *bottleneck_csp6->getOutput(0), 768, 3, 2, 1, "model.7");
+    // printTensor("conv7", conv7->getOutput(0));
+
+    auto spp8 = addSPP( network, weightMap, *conv7->getOutput(0), 768, 768, {5, 9, 13}, "model.8" );
+    // printTensor("spp8", spp8->getOutput(0));
+
+    auto bottleneck_csp9 = addBottleneckCSP( network, weightMap, *spp8->getOutput(0), 768, 768, 4, true, 1, 0.5, "model.9" );
+    // printTensor("bottleneck_csp9", bottleneck_csp9->getOutput(0));
+
+    // // head  wrong
+    auto bottleneck_csp10 = addBottleneckCSP( network, weightMap, *bottleneck_csp9->getOutput(0), 768, 768, 2, false, 1, 0.5, "model.10" );
+    // printTensor("bottleneck_csp10", bottleneck_csp10->getOutput(0));
+    // bottleneck_csp10->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*bottleneck_csp10->getOutput(0));
+
+    auto conv11 = network->addConvolutionNd( *bottleneck_csp10->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.11.weight"], weightMap["model.11.bias"]);
+    conv11->setName("conv.11");
+    conv11->setStrideNd(DimsHW{1, 1});
+    conv11->setPaddingNd(DimsHW{0, 0});
+    // printTensor("conv11", conv11->getOutput(0));
+
+    // float scale[] = {1.0, 1.0, 2.0, 2.0};
+    float scale[] = {1.0, 1.0, 2.0, 2.0};
+    //upsample12 scale_factor = 2
+    auto upsample12 = network->addResize(*bottleneck_csp10->getOutput(0));
+    // upsample12->setResizeMode(ResizeMode::kNEAREST);
+    upsample12->setResizeMode(InterpolationMode::kNEAREST);
+    upsample12->setScales(scale, 4);
+    // printTensor("upsample12", upsample12->getOutput(0));
+
+    ITensor* inputTensorsCat13[] = {upsample12->getOutput(0), bottleneck_csp6->getOutput(0)};
+    auto cat13 = network->addConcatenation(inputTensorsCat13, 2);
+    // printTensor("cat13", cat13->getOutput(0));
+    // cat13->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*cat13->getOutput(0));
+
+    //
+    //
+    //
+    auto conv14 = addConvBNLeaky( network, weightMap, *cat13->getOutput(0), 384, 1, 1, 1, "model.14" );
+    // printTensor("conv14", conv14->getOutput(0));
+    // conv14->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv14->getOutput(0));
+
+
+    auto bottleneck_csp15 = addBottleneckCSP( network, weightMap, *conv14->getOutput(0), 384, 384, 2, false, 1, 0.5, "model.15" );
+    // printTensor("bottleneck_csp15", bottleneck_csp15->getOutput(0));
+
+    auto conv16 = network->addConvolutionNd( *bottleneck_csp15->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.16.weight"], weightMap["model.16.bias"]);
+    // printTensor("conv16", conv16->getOutput(0));
+
+    // conv16->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv16->getOutput(0));
+
+    // upsample 17
+    auto upsample17 = network->addResize( *bottleneck_csp15->getOutput(0) );
+    upsample17->setResizeMode(InterpolationMode::kNEAREST);
+    upsample17->setScales(scale, 4);
+    // printTensor("upsample17", upsample17->getOutput(0));
+
+
+    ITensor* inputTensorsCat18[] = {upsample17->getOutput(0), bottleneck_csp4->getOutput(0)};
+    auto cat18 = network->addConcatenation(inputTensorsCat18, 2);
+    // printTensor("cat18", cat18->getOutput(0));
+    // cat18->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*cat18->getOutput(0));
+
+    auto conv19 = addConvBNLeaky(network, weightMap, *cat18->getOutput(0), 192, 1, 1, 1, "model.19");
+    // printTensor("conv19", conv19->getOutput(0));
+    // conv19->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*conv19->getOutput(0));
+
+    auto bottleneck_csp20 = addBottleneckCSP( network, weightMap, *conv19->getOutput(0), 192, 192, 2, false, 1, 0.5, "model.20" );
+    // printTensor("bottleneck_csp20", bottleneck_csp20->getOutput(0));
+    // bottleneck_csp20->getOutput(0)->setName(kOutputTensorName);
+    // network->markOutput(*bottleneck_csp20->getOutput(0));
+
+    auto conv21 = network->addConvolutionNd( *bottleneck_csp20->getOutput(0), 24, DimsHW{1, 1}, weightMap["model.21.weight"], weightMap["model.21.bias"]);
+    // printTensor("conv21", conv21->getOutput(0));
+
+    // // Detect plugin
+    auto yolo = addYololayer( network, weightMap, "model.22", {conv21, conv16, conv11} );
+
+    yolo->getOutput(0)->setName(kOutputTensorName);
+    network->markOutput(*yolo->getOutput(0));
+
+    auto profile = builder->createOptimizationProfile();
+
+    profile->setDimensions(kInputTensorName, OptProfileSelector::kMIN, Dims4{minBatchSize, 3, kInputH, kInputW});
+    profile->setDimensions(kInputTensorName, OptProfileSelector::kOPT, Dims4{optBatchSize, 3, kInputH, kInputW});
+    profile->setDimensions(kInputTensorName, OptProfileSelector::kMAX, Dims4{maxBatchSize, 3, kInputH, kInputW});
+
+    // builder->setMaxBatchSize(maxBatchSize);
+    config->addOptimizationProfile(profile);
+
+    // builder->setMaxBatchSize(maxBatchSize);
+    config->setFlag(BuilderFlag::kFP16);
+    auto engine = builder->buildSerializedNetwork(*network, *config);
+
+    return engine;
 
 }
